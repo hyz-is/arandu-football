@@ -24,7 +24,7 @@ API_FOOTBALL_KEY=...
 ## 2. The client, built once
 
 ```sh
-go get github.com/hyz-is/arandu-football@v0.1.0
+go get github.com/hyz-is/arandu-football@v0.1.1
 ```
 
 ```go

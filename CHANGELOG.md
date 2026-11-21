@@ -10,6 +10,30 @@ a release is corrected by another release and never by moving a tag.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-21
+
+Checked against the API-Football v3 documentation.
+
+### Changed
+
+- `SUSP` (match suspended) is `StatusLive`, not `StatusPostponed`: the service's
+  status table lists it, like `INT`, as "In Play". `PST` is the only postponed
+  code.
+- `Fixtures` with `LiveOnly` and a `LeagueID` sends `live=<league>`, which the
+  service takes, instead of fetching every live fixture and filtering; the
+  filter is kept as a guard.
+- The test JSON follows the shape of the service's answers (parameters, venue,
+  periods, status long and extra, league flag and standings, season coverage).
+
+### Added
+
+- `Quota.MinuteRemaining` and `Quota.MinuteLimit`, read from the per-minute
+  `X-RateLimit-Remaining` and `X-RateLimit-Limit` headers.
+- An answer whose `paging.total` is more than one is followed page by page with
+  the `page` parameter, so a list is not cut at the first page.
+- `Leagues` refuses a search of one or two characters before the request, as the
+  service does (the `Fake` too).
+
 ## [0.1.0] - 2026-11-21
 
 ### Added

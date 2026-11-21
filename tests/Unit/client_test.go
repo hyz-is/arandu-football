@@ -62,31 +62,44 @@ func (r *recorder) count() int {
 	return len(r.requests)
 }
 
+// The JSON below follows the shape of API-Football v3 answers: the frame (get,
+// parameters, errors, results, paging, response) around objects with the
+// service's own field names.
 const leaguesJSON = `{
   "get": "leagues", "parameters": {"search": "premier"}, "errors": [], "results": 1,
   "paging": {"current": 1, "total": 1},
   "response": [{
     "league": {"id": 39, "name": "Premier League", "type": "League", "logo": "https://media.api-sports.io/football/leagues/39.png"},
     "country": {"name": "England", "code": "GB", "flag": "https://media.api-sports.io/flags/gb.svg"},
-    "seasons": [{"year": 2023, "current": false}, {"year": 2024, "current": true}]
+    "seasons": [
+      {"year": 2023, "start": "2023-08-11", "end": "2024-05-19", "current": false, "coverage": {"fixtures": {"events": true, "lineups": true, "statistics_fixtures": true, "statistics_players": true}, "standings": true, "players": true, "top_scorers": true, "top_assists": true, "top_cards": true, "injuries": true, "predictions": true, "odds": true}},
+      {"year": 2024, "start": "2024-08-16", "end": "2025-05-25", "current": true, "coverage": {"fixtures": {"events": true, "lineups": true, "statistics_fixtures": true, "statistics_players": true}, "standings": true, "players": true, "top_scorers": true, "top_assists": true, "top_cards": true, "injuries": true, "predictions": true, "odds": true}}
+    ]
   }]
 }`
 
 const teamsJSON = `{
-  "get": "teams", "errors": [], "results": 2, "paging": {"current": 1, "total": 1},
+  "get": "teams", "parameters": {"league": "39", "season": "2024"}, "errors": [], "results": 2,
+  "paging": {"current": 1, "total": 1},
   "response": [
     {"team": {"id": 33, "name": "Manchester United", "code": "MUN", "country": "England", "founded": 1878, "national": false, "logo": "https://media.api-sports.io/football/teams/33.png"},
-     "venue": {"id": 556, "name": "Old Trafford"}},
+     "venue": {"id": 556, "name": "Old Trafford", "address": "Sir Matt Busby Way", "city": "Manchester", "capacity": 76212, "surface": "grass", "image": "https://media.api-sports.io/football/venues/556.png"}},
     {"team": {"id": 34, "name": "Newcastle", "code": "NEW", "country": "England", "founded": 1892, "national": false, "logo": "https://media.api-sports.io/football/teams/34.png"},
-     "venue": {"id": 562, "name": "St. James' Park"}}
+     "venue": {"id": 562, "name": "St. James' Park", "address": "Barrack Road", "city": "Newcastle upon Tyne", "capacity": 52389, "surface": "grass", "image": "https://media.api-sports.io/football/venues/562.png"}}
   ]
 }`
 
+// fixtureJSON is one element of the /fixtures response array, with the service's
+// own fields: fixture (with periods, venue and a status that has long, short,
+// elapsed and extra), league, teams, goals and score.
 func fixtureJSON(id int, short string, elapsed string, goals, fulltime, extratime, penalty string, league int, date string, ts int64) string {
 	return fmt.Sprintf(`{
-  "fixture": {"id": %d, "referee": null, "timezone": "UTC", "date": %q, "timestamp": %d,
-    "status": {"long": "x", "short": %q, "elapsed": %s, "extra": null}},
-  "league": {"id": %d, "name": "Premier League", "country": "England", "season": 2024, "round": "Regular Season - 14"},
+  "fixture": {"id": %d, "referee": "M. Oliver, England", "timezone": "UTC", "date": %q, "timestamp": %d,
+    "periods": {"first": null, "second": null},
+    "venue": {"id": 556, "name": "Old Trafford", "city": "Manchester"},
+    "status": {"long": "Status", "short": %q, "elapsed": %s, "extra": null}},
+  "league": {"id": %d, "name": "Premier League", "country": "England", "logo": "https://media.api-sports.io/football/leagues/39.png",
+    "flag": "https://media.api-sports.io/flags/gb.svg", "season": 2024, "round": "Regular Season - 14", "standings": true},
   "teams": {"home": {"id": 33, "name": "Manchester United", "logo": "h.png", "winner": true},
             "away": {"id": 34, "name": "Newcastle", "logo": "a.png", "winner": false}},
   "goals": %s,
@@ -94,9 +107,15 @@ func fixtureJSON(id int, short string, elapsed string, goals, fulltime, extratim
 }`, id, date, ts, short, elapsed, league, goals, fulltime, extratime, penalty)
 }
 
+// envelopeOf frames rows as the service does: parameters, no errors, one page.
 func envelopeOf(rows ...string) string {
-	return fmt.Sprintf(`{"get":"fixtures","errors":[],"results":%d,"paging":{"current":1,"total":1},"response":[%s]}`,
-		len(rows), strings.Join(rows, ","))
+	return pageOf(1, 1, rows...)
+}
+
+// pageOf frames rows as page current of total.
+func pageOf(current, total int, rows ...string) string {
+	return fmt.Sprintf(`{"get":"fixtures","parameters":{"league":"39","season":"2024"},"errors":[],"results":%d,"paging":{"current":%d,"total":%d},"response":[%s]}`,
+		len(rows), current, total, strings.Join(rows, ","))
 }
 
 const none = `{"home": null, "away": null}`
@@ -290,6 +309,10 @@ func TestLiveFixturesAreFilteredByLeague(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fixtures: %v", err)
 	}
+	// The service takes the league ids in live: live=140 narrows its answer.
+	if got := rec.last().URL.Query(); got.Get("live") != "140" || got.Has("league") {
+		t.Errorf("query = %v", got)
+	}
 	if len(one) != 1 || one[0].ID != 2 {
 		t.Errorf("league filter kept %+v", one)
 	}
@@ -303,7 +326,8 @@ func TestEveryShortStatusMapsToOneOfTheFive(t *testing.T) {
 		"BT": football.StatusLive, "P": football.StatusLive, "LIVE": football.StatusLive, "INT": football.StatusLive,
 		"FT": football.StatusFinished, "AET": football.StatusFinished, "PEN": football.StatusFinished,
 		"AWD": football.StatusFinished, "WO": football.StatusFinished,
-		"PST": football.StatusPostponed, "SUSP": football.StatusPostponed,
+		"SUSP": football.StatusLive, // "In Play" in the service's status table
+		"PST":  football.StatusPostponed,
 		"CANC": football.StatusCancelled, "ABD": football.StatusCancelled,
 		"NEW-CODE": football.StatusScheduled,
 	}
@@ -397,13 +421,15 @@ func TestQuotaIsReadFromTheHeaders(t *testing.T) {
 	}
 	rec.headers.Set("x-ratelimit-requests-remaining", "7412")
 	rec.headers.Set("x-ratelimit-requests-limit", "7500")
+	rec.headers.Set("X-RateLimit-Remaining", "299")
+	rec.headers.Set("X-RateLimit-Limit", "300")
 
 	before := time.Now()
 	if _, err := client.Leagues(context.Background(), ""); err != nil {
 		t.Fatalf("Leagues: %v", err)
 	}
 	q := client.Quota()
-	if q.Remaining != 7412 || q.Limit != 7500 || q.At.Before(before) {
+	if q.Remaining != 7412 || q.Limit != 7500 || q.MinuteRemaining != 299 || q.MinuteLimit != 300 || q.At.Before(before) {
 		t.Errorf("Quota = %+v", q)
 	}
 
@@ -514,5 +540,76 @@ func TestTheTimeoutBoundsASlowService(t *testing.T) {
 	}
 	if time.Since(start) > 5*time.Second {
 		t.Error("the Timeout did not bound the request")
+	}
+}
+
+func TestAnErrorsArrayWithAMessageIsAnError(t *testing.T) {
+	t.Parallel()
+	client, _ := newService(t, map[string]string{"/leagues": `{"get":"leagues","parameters":[],"errors":["Something went wrong"],"results":0,"paging":{"current":1,"total":1},"response":[]}`})
+	_, err := client.Leagues(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "Something went wrong") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestALeagueSearchOfOneOrTwoCharactersIsRefusedBeforeTheRequest(t *testing.T) {
+	t.Parallel()
+	client, rec := newService(t, map[string]string{"/leagues": leaguesJSON})
+	for _, search := range []string{"a", "UK", " br "} {
+		if _, err := client.Leagues(context.Background(), search); err == nil {
+			t.Errorf("a search of %q was accepted", search)
+		}
+	}
+	if rec.count() != 0 {
+		t.Error("a short search reached the service")
+	}
+	if _, err := client.Leagues(context.Background(), "eng "); err != nil {
+		t.Errorf("a search of three characters was refused: %v", err)
+	}
+}
+
+func TestAnAnswerWithMorePagesIsFollowed(t *testing.T) {
+	t.Parallel()
+	pages := map[string]string{
+		"":  pageOf(1, 3, fixtureJSON(1, "NS", "null", none, none, none, none, 39, "2024-12-01T15:00:00+00:00", 1733065200)),
+		"2": pageOf(2, 3, fixtureJSON(2, "NS", "null", none, none, none, none, 39, "2024-12-01T15:00:00+00:00", 1733065200)),
+		"3": pageOf(3, 3, fixtureJSON(3, "NS", "null", none, none, none, none, 39, "2024-12-01T15:00:00+00:00", 1733065200)),
+	}
+	var mu sync.Mutex
+	var asked []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		mu.Lock()
+		asked = append(asked, page)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, pages[page])
+	}))
+	t.Cleanup(server.Close)
+	client, err := football.New(football.Config{APIKey: "k", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fixtures, err := client.Fixtures(context.Background(), football.FixtureQuery{LeagueID: 39, Season: 2024})
+	if err != nil {
+		t.Fatalf("Fixtures: %v", err)
+	}
+	if len(fixtures) != 3 || fixtures[0].ID != 1 || fixtures[2].ID != 3 {
+		t.Errorf("fixtures = %+v", fixtures)
+	}
+	if got := strings.Join(asked, ","); got != ",2,3" {
+		t.Errorf("pages asked = %q, want the first without page, then 2 and 3", got)
+	}
+}
+
+func TestASinglePageIsNotAskedForByNumber(t *testing.T) {
+	t.Parallel()
+	client, rec := newService(t, map[string]string{"/teams": teamsJSON})
+	if _, err := client.Teams(context.Background(), 39, 2024); err != nil {
+		t.Fatalf("Teams: %v", err)
+	}
+	if rec.count() != 1 || rec.last().URL.Query().Has("page") {
+		t.Errorf("requests = %d, query = %v", rec.count(), rec.last().URL.Query())
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 var (
@@ -88,6 +89,9 @@ func (a *APIFootball) Quota() Quota {
 func (a *APIFootball) Leagues(ctx context.Context, search string) ([]League, error) {
 	params := url.Values{}
 	if s := strings.TrimSpace(search); s != "" {
+		if err := checkSearch(s); err != nil {
+			return nil, err
+		}
 		params.Set("search", s)
 	}
 	var rows []struct {
@@ -115,6 +119,18 @@ func (a *APIFootball) Leagues(ctx context.Context, search string) ([]League, err
 		out = append(out, league)
 	}
 	return out, nil
+}
+
+// minSearch is the shortest search the service takes for /leagues.
+const minSearch = 3
+
+// checkSearch refuses a search the service would refuse, before it costs a
+// request from the allowance.
+func checkSearch(search string) error {
+	if utf8.RuneCountInString(search) < minSearch {
+		return fmt.Errorf("football: the search %q is shorter than %d characters", search, minSearch)
+	}
+	return nil
 }
 
 // Teams lists the teams of a league in a season.
@@ -147,8 +163,9 @@ func (a *APIFootball) Teams(ctx context.Context, leagueID int64, season int) ([]
 // Fixtures lists the fixtures a query selects.
 //
 // With IDs it asks for them in batches of twenty. With LiveOnly it asks for
-// every live fixture and keeps those of LeagueID when one is given. Otherwise
-// it sends the league, the season and the dates, with the clock in UTC.
+// the live fixtures, of LeagueID when one is given (live=<league>), otherwise
+// of every league (live=all). Otherwise it sends the league, the season and the
+// dates, with the clock in UTC.
 func (a *APIFootball) Fixtures(ctx context.Context, q FixtureQuery) ([]Fixture, error) {
 	switch {
 	case len(q.IDs) > 0:
@@ -156,11 +173,15 @@ func (a *APIFootball) Fixtures(ctx context.Context, q FixtureQuery) ([]Fixture, 
 	case q.LiveOnly:
 		params := url.Values{}
 		params.Set("live", "all")
+		if q.LeagueID != 0 {
+			params.Set("live", strconv.FormatInt(q.LeagueID, 10))
+		}
 		params.Set("timezone", "UTC")
 		fixtures, err := a.fixtureRequest(ctx, params)
 		if err != nil || q.LeagueID == 0 {
 			return fixtures, err
 		}
+		// The service already narrowed the answer; the filter is a guard.
 		kept := fixtures[:0]
 		for _, fixture := range fixtures {
 			if fixture.LeagueID == q.LeagueID {
@@ -340,14 +361,86 @@ func copyInt(v *int) *int {
 	return &c
 }
 
-// envelope is the frame every answer comes in.
+// envelope is the frame every answer comes in: get, parameters, errors,
+// results, paging and response.
 type envelope struct {
-	Errors   json.RawMessage `json:"errors"`
+	Errors json.RawMessage `json:"errors"`
+	Paging struct {
+		Current int `json:"current"`
+		Total   int `json:"total"`
+	} `json:"paging"`
 	Response json.RawMessage `json:"response"`
 }
 
-// get makes one request and decodes its response array into out.
+// maxPages stops a runaway paging field from draining the allowance.
+const maxPages = 50
+
+// get makes the request and decodes its response array into out. An answer
+// whose paging.total is more than one is followed page by page, with the page
+// parameter, and the pages are joined into one array.
 func (a *APIFootball) get(ctx context.Context, path string, params url.Values, out any) error {
+	first, err := a.page(ctx, path, params)
+	if err != nil {
+		return err
+	}
+	total := first.Paging.Total
+	if total <= 1 {
+		return decodeResponse(path, first.Response, out)
+	}
+	if total > maxPages {
+		return fmt.Errorf("football: %s has %d pages, more than the %d this package reads", path, total, maxPages)
+	}
+
+	var rows []json.RawMessage
+	if err := appendRows(&rows, path, first.Response); err != nil {
+		return err
+	}
+	for number := 2; number <= total; number++ {
+		next := url.Values{}
+		for key, values := range params {
+			next[key] = values
+		}
+		next.Set("page", strconv.Itoa(number))
+		frame, err := a.page(ctx, path, next)
+		if err != nil {
+			return err
+		}
+		if err := appendRows(&rows, path, frame.Response); err != nil {
+			return err
+		}
+	}
+	joined, err := json.Marshal(rows)
+	if err != nil {
+		return fmt.Errorf("football: joining the pages of %s: %w", path, err)
+	}
+	return decodeResponse(path, joined, out)
+}
+
+func appendRows(rows *[]json.RawMessage, path string, response json.RawMessage) error {
+	if len(response) == 0 || string(response) == "null" {
+		return nil
+	}
+	var page []json.RawMessage
+	if err := json.Unmarshal(response, &page); err != nil {
+		return fmt.Errorf("football: %s sent an unexpected response: %w", path, err)
+	}
+	*rows = append(*rows, page...)
+	return nil
+}
+
+func decodeResponse(path string, response json.RawMessage, out any) error {
+	if len(response) == 0 || string(response) == "null" {
+		return nil
+	}
+	if err := json.Unmarshal(response, out); err != nil {
+		return fmt.Errorf("football: %s sent an unexpected response: %w", path, err)
+	}
+	return nil
+}
+
+// page makes one request and returns its frame, with the errors field already
+// treated.
+func (a *APIFootball) page(ctx context.Context, path string, params url.Values) (envelope, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
@@ -357,7 +450,7 @@ func (a *APIFootball) get(ctx context.Context, path string, params url.Values, o
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return fmt.Errorf("football: building the request: %w", err)
+		return envelope{}, fmt.Errorf("football: building the request: %w", err)
 	}
 	request.Header.Set("x-apisports-key", a.apiKey)
 	request.Header.Set("Accept", "application/json")
@@ -365,40 +458,34 @@ func (a *APIFootball) get(ctx context.Context, path string, params url.Values, o
 
 	response, err := a.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("football: %s: %w", path, err)
+		return envelope{}, fmt.Errorf("football: %s: %w", path, err)
 	}
 	defer response.Body.Close()
 	a.readQuota(response.Header)
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxBody))
 	if err != nil {
-		return fmt.Errorf("football: reading %s: %w", path, err)
+		return envelope{}, fmt.Errorf("football: reading %s: %w", path, err)
 	}
 
 	switch response.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return fmt.Errorf("%w (HTTP %d)", ErrUnauthorized, response.StatusCode)
+		return envelope{}, fmt.Errorf("%w (HTTP %d)", ErrUnauthorized, response.StatusCode)
 	case http.StatusTooManyRequests:
-		return fmt.Errorf("%w (HTTP 429)", ErrRateLimited)
+		return envelope{}, fmt.Errorf("%w (HTTP 429)", ErrRateLimited)
 	}
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("football: %s answered HTTP %d", path, response.StatusCode)
+		return envelope{}, fmt.Errorf("football: %s answered HTTP %d", path, response.StatusCode)
 	}
 
 	var frame envelope
 	if err := json.Unmarshal(body, &frame); err != nil {
-		return fmt.Errorf("football: %s sent unreadable JSON: %w", path, err)
+		return envelope{}, fmt.Errorf("football: %s sent unreadable JSON: %w", path, err)
 	}
 	if err := apiError(frame.Errors); err != nil {
-		return err
+		return envelope{}, err
 	}
-	if len(frame.Response) == 0 || string(frame.Response) == "null" {
-		return nil
-	}
-	if err := json.Unmarshal(frame.Response, out); err != nil {
-		return fmt.Errorf("football: %s sent an unexpected response: %w", path, err)
-	}
-	return nil
+	return frame, nil
 }
 
 // apiError reads the errors field, which is an empty array when all is well and
@@ -457,12 +544,16 @@ func apiError(raw json.RawMessage) error {
 	return fmt.Errorf("football: the service refused the request: %s", detail)
 }
 
-// readQuota keeps the allowance the headers report. A header that is missing
-// leaves the figure it had.
+// readQuota keeps the allowance the headers report: the day's, in
+// x-ratelimit-requests-limit and x-ratelimit-requests-remaining, and the
+// minute's, in X-RateLimit-Limit and X-RateLimit-Remaining. A header that is
+// missing leaves the figure it had.
 func (a *APIFootball) readQuota(header http.Header) {
 	remaining, okRemaining := headerInt(header, "x-ratelimit-requests-remaining")
 	limit, okLimit := headerInt(header, "x-ratelimit-requests-limit")
-	if !okRemaining && !okLimit {
+	minuteRemaining, okMinuteRemaining := headerInt(header, "X-RateLimit-Remaining")
+	minuteLimit, okMinuteLimit := headerInt(header, "X-RateLimit-Limit")
+	if !okRemaining && !okLimit && !okMinuteRemaining && !okMinuteLimit {
 		return
 	}
 	a.mu.Lock()
@@ -472,6 +563,12 @@ func (a *APIFootball) readQuota(header http.Header) {
 	}
 	if okLimit {
 		a.quota.Limit = limit
+	}
+	if okMinuteRemaining {
+		a.quota.MinuteRemaining = minuteRemaining
+	}
+	if okMinuteLimit {
+		a.quota.MinuteLimit = minuteLimit
 	}
 	a.quota.At = a.now()
 }

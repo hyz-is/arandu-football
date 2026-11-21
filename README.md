@@ -23,7 +23,7 @@ owns no table: there is no module to wire, no route and no migration.
 ## Install
 
 ```sh
-go get github.com/hyz-is/arandu-football@v0.1.0
+go get github.com/hyz-is/arandu-football@v0.1.1
 ```
 
 Go 1.26.10 or later.
@@ -88,9 +88,16 @@ type Source interface {
 }
 ```
 
-`Quota` makes no request: it is the last allowance read from the
-`x-ratelimit-requests-remaining` and `x-ratelimit-requests-limit` headers of the
-most recent answer, and its `At` is the zero time before the first answer.
+`Quota` makes no request: it is the last allowance read from the headers of the
+most recent answer, and its `At` is the zero time before the first answer. The
+day's allowance (`Remaining`, `Limit`) comes from `x-ratelimit-requests-remaining`
+and `x-ratelimit-requests-limit`; the minute's (`MinuteRemaining`, `MinuteLimit`)
+from `X-RateLimit-Remaining` and `X-RateLimit-Limit`.
+
+When an answer says it has more than one page (`paging.total`), the next pages
+are read with the `page` parameter and joined, so a list is never cut short.
+`Leagues` refuses a search of one or two characters, as the service does, before
+it spends a request.
 
 ### Fixtures
 
@@ -98,8 +105,8 @@ most recent answer, and its `At` is the zero time before the first answer.
 
 1. `IDs`: asked with the service's `ids` parameter, twenty to a request, so a
    long list is several requests. Duplicates are asked once.
-2. `LiveOnly`: every live fixture (`live=all`), kept to `LeagueID` when one is
-   given.
+2. `LiveOnly`: the live fixtures, `live=all` or `live=<LeagueID>` when a league
+   is given.
 3. Otherwise `LeagueID`, `Season` and the `From` and `To` dates, sent as
    `YYYY-MM-DD` in UTC. A zero field is left out; a query with every field zero
    is refused.
@@ -114,9 +121,9 @@ They are `nil` until the fixture has started.
 | Service code | Status |
 | --- | --- |
 | `NS`, `TBD` | `StatusScheduled` |
-| `1H`, `HT`, `2H`, `ET`, `BT`, `P`, `LIVE`, `INT` | `StatusLive` |
+| `1H`, `HT`, `2H`, `ET`, `BT`, `P`, `SUSP`, `INT`, `LIVE` | `StatusLive` |
 | `FT`, `AET`, `PEN`, `AWD`, `WO` | `StatusFinished` |
-| `PST`, `SUSP` | `StatusPostponed` |
+| `PST` | `StatusPostponed` |
 | `CANC`, `ABD` | `StatusCancelled` |
 
 A code the package does not know is read as scheduled: a fixture is never

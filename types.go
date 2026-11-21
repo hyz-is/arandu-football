@@ -14,14 +14,14 @@ const (
 	// code this package does not know.
 	StatusScheduled Status = "scheduled"
 	// StatusLive is a fixture in play, including the half-time break, extra
-	// time, the penalty shoot-out and a temporary interruption: 1H, HT, 2H, ET,
-	// BT, P, LIVE and INT.
+	// time, the penalty shoot-out, a temporary interruption and a suspension, all
+	// of them "In Play" in the service's table: 1H, HT, 2H, ET, BT, P, SUSP, INT
+	// and LIVE.
 	StatusLive Status = "live"
 	// StatusFinished is a fixture with a result: FT, AET and PEN, and AWD and
 	// WO, where the result was awarded without the match being played.
 	StatusFinished Status = "finished"
-	// StatusPostponed is a fixture that will be played at another time: PST
-	// and SUSP.
+	// StatusPostponed is a fixture moved to another day: PST.
 	StatusPostponed Status = "postponed"
 	// StatusCancelled is a fixture that will not be played: CANC and ABD.
 	StatusCancelled Status = "cancelled"
@@ -93,8 +93,15 @@ type FixtureQuery struct {
 
 // Quota is the last request allowance the service reported.
 type Quota struct {
+	// Remaining and Limit are the day's allowance, from the
+	// x-ratelimit-requests-remaining and x-ratelimit-requests-limit headers.
 	Remaining int
 	Limit     int
+	// MinuteRemaining and MinuteLimit are the per-minute allowance, from the
+	// X-RateLimit-Remaining and X-RateLimit-Limit headers. They are zero until
+	// an answer carries them.
+	MinuteRemaining int
+	MinuteLimit     int
 	// At is when the figures were read. It is the zero time before the first
 	// answer.
 	At time.Time

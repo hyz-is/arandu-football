@@ -92,14 +92,20 @@ func (f *Fake) Quota() Quota {
 }
 
 // Leagues lists the leagues whose name or country contains search, ignoring
-// case, ordered by ID.
+// case, ordered by ID. Like the service, it refuses a search of one or two
+// characters.
 func (f *Fake) Leagues(ctx context.Context, search string) ([]League, error) {
 	if err := f.ready(ctx); err != nil {
 		return nil, err
 	}
+	needle := strings.ToLower(strings.TrimSpace(search))
+	if needle != "" {
+		if err := checkSearch(needle); err != nil {
+			return nil, err
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	needle := strings.ToLower(strings.TrimSpace(search))
 	out := []League{}
 	for _, league := range f.leagues {
 		if needle == "" ||
