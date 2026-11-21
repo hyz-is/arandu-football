@@ -10,6 +10,15 @@ a release is corrected by another release and never by moving a tag.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-21
+
+### Added
+
+- `ErrPlan`: the service answered that the account's plan does not cover the
+  request (`errors.plan`, for example "Free plans do not have access to this
+  season" on a free account asking for the current season). The fix is a paid
+  plan, not a retry, so a consumer can tell its operator so.
+
 ## [0.1.1] - 2026-11-21
 
 Checked against the API-Football v3 documentation.

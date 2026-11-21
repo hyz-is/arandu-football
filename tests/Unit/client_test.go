@@ -463,9 +463,17 @@ func TestErrorsInsideAnHTTP200AreTreated(t *testing.T) {
 		}
 	}
 
-	client, _ := newService(t, map[string]string{"/leagues": `{"errors":{"plan":"Free plans do not have access to this season."},"results":0,"response":[]}`})
+	// The answer the service gives a free plan asking for the current season,
+	// seen on a real account on 21/11/2026.
+	client, _ := newService(t, map[string]string{"/leagues": `{"errors":{"plan":"Free plans do not have access to this season, try from 2022 to 2024."},"results":0,"response":[]}`})
 	_, err := client.Leagues(context.Background(), "")
-	if err == nil || errors.Is(err, football.ErrUnauthorized) || errors.Is(err, football.ErrRateLimited) || !strings.Contains(err.Error(), "Free plans") {
+	if !errors.Is(err, football.ErrPlan) || errors.Is(err, football.ErrUnauthorized) || errors.Is(err, football.ErrRateLimited) || !strings.Contains(err.Error(), "Free plans") {
+		t.Errorf("plan error = %v, want ErrPlan carrying the service's sentence", err)
+	}
+
+	client, _ = newService(t, map[string]string{"/leagues": `{"errors":{"league":"The League field is required."},"results":0,"response":[]}`})
+	_, err = client.Leagues(context.Background(), "")
+	if err == nil || errors.Is(err, football.ErrPlan) || errors.Is(err, football.ErrUnauthorized) || errors.Is(err, football.ErrRateLimited) {
 		t.Errorf("another API error = %v", err)
 	}
 }

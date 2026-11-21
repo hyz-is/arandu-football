@@ -22,6 +22,10 @@ var (
 	// ErrRateLimited means the account is out of requests, for the minute or
 	// for the day.
 	ErrRateLimited = errors.New("football: the request limit was reached")
+	// ErrPlan means the account's plan does not cover what was asked, for
+	// example the current season on a free plan: the fix is a paid plan, not a
+	// retry.
+	ErrPlan = errors.New("football: the account's plan does not cover this request")
 )
 
 // maxIDsPerRequest is how many fixture ids the service takes in one call.
@@ -532,6 +536,8 @@ func apiError(raw json.RawMessage) error {
 			return fmt.Errorf("%w: %s", ErrUnauthorized, detail)
 		case "requests", "ratelimit":
 			return fmt.Errorf("%w: %s", ErrRateLimited, detail)
+		case "plan":
+			return fmt.Errorf("%w: %s", ErrPlan, detail)
 		}
 	}
 	lowered := strings.ToLower(detail)

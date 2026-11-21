@@ -62,6 +62,8 @@ func main() {
 		fmt.Println("out of requests; try again later")
 	case errors.Is(err, football.ErrUnauthorized):
 		fmt.Println("the API key was refused")
+	case errors.Is(err, football.ErrPlan):
+		fmt.Println("the plan does not cover this season; upgrade the plan")
 	case err != nil:
 		panic(err)
 	}
@@ -134,7 +136,8 @@ reported live or finished on a guess.
 The service reports most failures inside an HTTP 200, in an `errors` field. They
 are treated: a refused key or account is `ErrUnauthorized`, and a minute or day
 limit is `ErrRateLimited`, as are HTTP 401, 403 and 429 for the first and the
-last. Test them with `errors.Is`. Any other refusal is an error carrying the
+last, and a request the account's plan does not cover (`errors.plan`, such as
+the current season on a free plan) is `ErrPlan`. Test them with `errors.Is`. Any other refusal is an error carrying the
 service's message. No error carries the API key.
 
 ## Test your own code

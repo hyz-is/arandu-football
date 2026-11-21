@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v0.1.2
+
+Nothing has to change. A plan refusal (`errors.plan`, such as the current season
+on a free plan) used to be a generic error and is now `ErrPlan`; check it with
+`errors.Is` to tell the operator to upgrade the plan instead of retrying.
+Install it with `go get github.com/hyz-is/arandu-football@v0.1.2`.
+
 ## v0.1.1
 
 No code has to change, but one behaviour does: a fixture whose code is `SUSP`
