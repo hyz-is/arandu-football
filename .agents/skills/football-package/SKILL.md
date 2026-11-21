@@ -1,6 +1,6 @@
 ---
 name: football-package
-description: Install, wire and use the Arandu Football package (Go, Arandu) in an application. Use when the request is to "install Arandu Football", "add football to the app", "go get github.com/hyz-is/arandu-football", "wire it into bootstrap/app.go", "register the module", "use the football routes", "everything under /football returns 403", "403 forbidden from football", "it redirects to /auth/login", "the table does not exist", "no such table", "change where it is mounted", "let admins read it", or when a project's go.mod already requires github.com/hyz-is/arandu-football. Covers the wiring and where each part goes, publishing and linking the views, the Config fields, none of them required, the routes, their names and the session they need, why the policy refuses everything until somebody opens it, and the migration step that is not optional.
+description: Read leagues, teams and fixtures from API-Football in an Arandu application with Arandu Football. Use when the request is to "show the matches", "get the fixtures", "sync the championship", "live scores", "follow a league", "API-Football", "api-sports", "go get github.com/hyz-is/arandu-football", "ErrRateLimited", "ErrUnauthorized", "how many requests are left", "test the code that reads football data", or when a project's go.mod already requires github.com/hyz-is/arandu-football. Covers the key, the client built once and kept as a football.Source, the fixture queries, the status and score rules, the errors, the quota, and the Fake for tests.
 license: MIT
 metadata:
   audience: app
@@ -8,207 +8,91 @@ metadata:
 
 # Using Arandu Football
 
-An Arandu package with one entity, its own table, its own routes and its own
-policy. It is registered by hand — there is no service provider, no container
-and no discovery, so if a line is not written in the application, it does not
-happen.
+Three pieces, each a few lines the application writes. Nothing is registered:
+there is no module, no route and no migration.
 
-## Install
+## 1. The key
 
-```bash
-go get github.com/hyz-is/arandu-football
+An account at API-Football (or API-Sports) gives a key. It belongs to whoever
+holds the subscription and every request spends that account's allowance. It
+goes in `.env` and in the deployment's secrets, never in the repository:
+
+```dotenv
+API_FOOTBALL_KEY=...
 ```
 
-## The wiring, and where each part goes
+## 2. The client, built once
 
-All of it is in `bootstrap/app.go`. `aru make:module` does not edit this file for
-you, and the views the package carries have to be published and linked, below.
-
-The import, with the other module imports:
+```sh
+go get github.com/hyz-is/arandu-football@v0.1.0
+```
 
 ```go
-import (
-	football "github.com/hyz-is/arandu-football"
-)
+client, err := football.New(football.Config{APIKey: os.Getenv("API_FOOTBALL_KEY")})
+if err != nil {
+	return err // an empty key, or a BaseURL that is not http or https
+}
 ```
 
-The construction, in `App`, once `NewAppServiceProvider` has returned. `New`
-refuses a wiring that cannot work and `Configure` has no way to return that
-error, so the module is built where the error can leave. The database and the
-session store are the ones the framework built from the configuration:
+Keep it where the application keeps its services (explicit wiring, for example in
+`bootstrap/app.go`), and give the code that reads football data a
+`football.Source`, not an `*APIFootball`, so a test can hand it `football.NewFake()`.
+
+## 3. The calls
 
 ```go
-	footballModule, err := football.New(football.Config{}, drivers.DB, drivers.Sessions)
-	if err != nil {
-		_ = drivers.Close()
-		return nil, err
-	}
+leagues, err := src.Leagues(ctx, "premier")           // empty search lists all
+teams, err := src.Teams(ctx, 39, 2024)                 // league, season
+fixtures, err := src.Fixtures(ctx, football.FixtureQuery{LeagueID: 39, Season: 2024, From: from, To: to})
+live, err := src.Fixtures(ctx, football.FixtureQuery{LiveOnly: true, LeagueID: 39})
+some, err := src.Fixtures(ctx, football.FixtureQuery{IDs: ids}) // twenty to a request
+left := src.Quota().Remaining                          // makes no request
 ```
 
-And the registration, in the `WithProviders(...)` chain the builder is made of:
+- `IDs` wins over everything else, then `LiveOnly`, then league, season and dates
+  (UTC dates, inclusive). A query with every field zero is refused.
+- `Kickoff` is UTC. `Status` is one of five. A code the package does not know is
+  read as scheduled.
+- `HomeGoals` and `AwayGoals` are normal time plus extra time, never the penalty
+  shoot-out, and `nil` until the match starts. Do not read a shoot-out result
+  from them.
+- `Elapsed` is the minute of play, only while live.
+
+## Errors
+
+`errors.Is(err, football.ErrRateLimited)`: out of requests for the minute or the
+day. Do not retry in a loop; schedule the next read, and use `Quota()` to decide
+how often to poll. `errors.Is(err, football.ErrUnauthorized)`: the key or the
+account was refused; retrying will not help. Anything else is the service's own
+message.
+
+## What the package does not do
+
+- No odds, predictions or bets. Do not look for them; they are not there.
+- It does not store anything. The application keeps what it needs; polling live
+  fixtures costs one request per call.
+- Logos are trademarks of the clubs and competitions. The addresses are given;
+  using them is the application's decision.
+
+## Tests
 
 ```go
-	return Configure(cfg, drivers, app).
-		WithProviders(footballModule).
-		WithVersion(version, commit).
-		Create()
+fake := football.NewFake()
+fake.AddLeague(football.League{ID: 39, Name: "Premier League"})
+fake.AddFixture(football.Fixture{ID: 1, LeagueID: 39, Season: 2024, Kickoff: kickoff, Status: football.StatusScheduled})
+fake.SetFixture(football.Fixture{ID: 1, LeagueID: 39, Season: 2024, Kickoff: kickoff, Status: football.StatusFinished, HomeGoals: &two, AwayGoals: &one})
+fake.FailWith(football.ErrRateLimited) // FailWith(nil) undoes it
 ```
 
-`New` returns an error rather than starting half-wired. It refuses a
-configuration that cannot work, a nil database handle and a nil session store,
-so a wiring mistake costs one restart instead of arriving as a nil dereference
-on the first request that needed it.
+`SetFixture` with the same ID moves a match through its life. No test of the
+application should reach the network.
 
-## Then publish and link the views
+## Symptoms
 
-The package carries the markup of its own pages and hands it over, and it
-refuses to boot until the project has linked it. Publish them, then compile them:
-
-```bash
-aru vendor:publish --tag=view
-aru vendor:publish --tag=view --apply
-aru view:build
-```
-
-The first line only previews; nothing is written without `--apply`. The files
-land under `resources/views/modules/football/` and are the project's from
-then on. `aru view:build` compiles them, and the compiled package is imported
-with the other blank imports of `bootstrap/app.go`:
-
-```go
-	_ "your/module/path/storage/framework/views/modules/football"
-```
-
-**Symptom to recognise:** the application stops at boot with an error naming the
-view, the command and the import. One of the steps is missing, and the import
-is the usual one.
-
-## Then run the migrations
-
-```bash
-aru migrate
-```
-
-Not optional, and not automatic. The package owns a table, which is why its
-`arandu.mod.toml` declares `migrations = true` — that declaration is how an
-installer finds out before deploying rather than from the first request.
-
-`aru migrate` is a step in the pipeline and never a call at the start of the
-process: with N replicas, N migrations race each other.
-
-**Symptom to recognise:** `no such table`, or `relation does not exist`, from a
-route that authorized correctly. The migration has not run.
-
-## Configuration
-
-| field | required | meaning |
-| --- | --- | --- |
-| `Prefix` | no | where the routes are mounted. Defaults to `/football` |
-| `PageSize` | no | how many records one page answers with. Defaults to 25, refused above 200 |
-
-`football.Config{}` is a complete configuration. There is no tenant to pass:
-every route needs a session, and the tenant of every statement comes from
-`data.Tenant(g)`, off the Grant of whoever is signed in. Passing a value the
-request named — a path segment, a header, a subdomain read off the URL — is what
-`TestNoTenantIsReadOutOfTheRequest` fails on in the package. In an application
-the same mistake is `aru doctor`'s `tenant-from-request`; in a package nothing
-but the package's own suite looks.
-
-`PageSize` above 200 is an error from `New`, not a silent 200. A number somebody
-wrote and did not get is worse than a number somebody wrote and was told about.
-
-## Routes
-
-| method | path | name |
-| --- | --- | --- |
-| `GET` | `/football` | `football.index` |
-| `GET` | `/football/{id}` | `football.show` |
-| `POST` | `/football` | `football.store` |
-
-Every route sits behind `RequireAuth`, mounted by the package itself. A request
-with no session is sent to `/auth/login` — 303, or `YPY-Redirect` for a YPY
-request — and comes back to the address it asked for after signing in. That is
-the sign-in screen the starter kit publishes; an application without one sees
-a 404 there.
-
-**Symptom to recognise:** every route of the package redirects to
-`/auth/login`. Nobody is signed in on that request: the session cookie did not
-arrive, or the session store passed to `New` is not the one the application
-signs people in with.
-
-Build URLs from the names, never by writing the path a second time. `aru
-route:list` shows them grouped by module. Under a custom `Prefix` the paths move
-and the names do not.
-
-`GET /football` answers `{"data": {"items": [...]}}`, and adds
-`"next_cursor"` beside `data` when a further page exists. Pass it back as
-`?cursor=`. A page shorter than `PageSize` is the last one and carries no
-cursor.
-
-`TenantID` is not in any response. That is deliberate: it names a customer's
-identifier and the response is a declared list of fields rather than the entity.
-
-## Every route refuses everybody, until you open the policy
-
-This is the state the package ships in, and it is not a bug to work around.
-`FootballPolicy` denies every action and has no branch that allows one:
-
-```
-403 Forbidden
-```
-
-is what a correctly installed, correctly migrated, correctly wired package
-answers to an administrator who is signed in, on day one.
-
-Opening an action means writing the rule that opens it, in the package's
-`policy.go`, inside the block that says so:
-
-```go
-	// arandu:begin custom
-	if a == FootballView && (s.ID == record.ID || s.HasRole("admin")) {
-		return nil
-	}
-	// arandu:end custom
-```
-
-What is not written there stays closed, including every action added later.
-There are five actions — `FootballView`, `FootballList`, `FootballCreate`,
-`FootballUpdate`, `FootballDelete` — and opening one opens exactly one.
-
-**Do not open it from the application.** There is no hook, no override and no
-config flag for the policy, and adding one would be a second place where
-authorization is decided. If the rules this application needs are not the rules
-the package ships, the change belongs in the package.
-
-## What the answers mean
-
-| status | what happened |
+| symptom | piece |
 | --- | --- |
-| `303` to `/auth/login` | there is no session on the request |
-| `403` | the policy refused, or no rule allows the action yet |
-| `404` | no row with that id in this tenant |
-| `303` back to the page the request came from | the input was rejected; the messages and what was typed are in the flash |
-| `422` `application/problem+json` | the input was rejected and the request asked for JSON; the messages are in `errors`, keyed by field |
-
-A request that asks for JSON (an `Accept` naming `application/json`, or an XHR
-that is not a YPY request) gets the 403 and the 404 as problem documents too. The
-sign-in redirect is the same for every client.
-
-The package does not choose these: its handlers return what the service
-returned, and the framework's router answers it. A refusal carries no detail
-beyond the status and its standard sentence. Telling a client why a policy said
-no tells it what exists and what does not, one request at a time. The reason is
-in the log.
-
-Anything else is a 500 and the framework's error page in development. The
-package returns unexpected errors rather than swallowing them, so a route that
-answers 200 with an empty body is not something it does.
-
-## Reporting a problem
-
-Issues and pull requests go to the repository the module path names,
-`github.com/hyz-is/arandu-football`, which belongs to `hyz-is`. A vulnerability goes to the
-private advisory form named in that repository's `SECURITY.md`, and never into
-an issue.
-
-MIT licensed. Copyright HYZIS.
+| `football: Config.APIKey is empty` | 1: the variable is not set in this environment |
+| `ErrUnauthorized` on every call | 1: wrong key, suspended account, or the key of another product |
+| `ErrRateLimited` after a few calls | 3: polling too often for the plan; read `Quota()` |
+| a finished match shows the wrong score | 3: the score is normal plus extra time, by design, and not the shoot-out |
+| no fixtures for a day | 3: the dates are UTC; a local midnight is another UTC day |

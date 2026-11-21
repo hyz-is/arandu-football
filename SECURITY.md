@@ -25,21 +25,18 @@ unless you ask not to be.
 
 ## What is in scope
 
-Anything that lets a caller reach data a policy did not authorize. In
-particular:
+Anything that exposes what the package keeps, or sends a request it should not.
+In particular:
 
-- a path from a handler to a Model or database handle that does not pass through
-  the Service and its Policy;
-- a route reachable without `RequireAuth`, or a handler that takes who is
-  asking from anywhere but the subject the guard put on the request;
-- a Model terminal reached before `security.Authorize`;
-- a query whose tenant scope is disabled, or a tenant taken from anywhere but
-  `data.Tenant(g)`;
-- a `Grant` that can be produced without a policy returning nil;
-- a field reaching a response that `Resource` does not list.
+- the API key reaching a log line, an error, a formatted `Config` or any request
+  header other than `x-apisports-key`;
+- a request to an address other than `Config.BaseURL`, or to an endpoint of the
+  service other than leagues, teams and fixtures;
+- a response the package reads in a way that lets a malformed answer run code,
+  exhaust memory or loop;
+- a `Fake` that hands out a value a caller can use to change what it holds.
 
 ## What is not
 
-- A vulnerability in the framework itself. Report that to the framework.
-- A policy that is too permissive in an application that opened it. What this
-  package ships denies everything; what an application opens is its own.
+- A vulnerability in API-Football itself. Report that to the service.
+- An API key that its owner published. Rotate it in the service's dashboard.

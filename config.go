@@ -3,96 +3,41 @@ package football
 import (
 	"fmt"
 	"net/http"
+	"time"
 )
 
-// The defaults for the optional settings. They are constants rather than
-// literals inside Config.withDefaults, so the value a reader finds here is the
-// value the package uses.
 const (
-	// DefaultPrefix is where the routes are mounted when Config leaves Prefix
-	// empty.
-	DefaultPrefix = "/football"
-	// DefaultPageSize is how many records one page answers with when Config
-	// leaves PageSize at zero.
-	DefaultPageSize = 25
-	// MaxPageSize is the ceiling PageSize is refused above. A page nobody
-	// bounded is a page that reads the whole table on the day the table is
-	// large.
-	MaxPageSize = 200
+	// DefaultBaseURL is the service's address.
+	DefaultBaseURL = "https://v3.football.api-sports.io"
+	// DefaultTimeout bounds one request when Config.Timeout is empty.
+	DefaultTimeout = 15 * time.Second
 )
 
-// Config is what the application passes when it wires this package.
-//
-// A typed struct rather than a map: a misspelled key in a map is a setting that
-// silently keeps its default, and the failure shows up as behaviour nobody
-// asked for rather than as an error. Here a field that does not exist does not
-// compile.
-//
-// It names no tenant, and that is deliberate. Every route sits behind
-// RequireAuth, so the tenant of every statement is the one the Grant carries,
-// from the session of whoever is asking; a tenant written here would be a
-// second place for one to come from. The zero value is a valid configuration.
+// Config is what [New] needs.
 type Config struct {
-	// Prefix is the path the routes are mounted under. Empty means
-	// DefaultPrefix.
-	Prefix string
-
-	// PageSize is how many records one page answers with. Zero means
-	// DefaultPageSize, and anything above MaxPageSize is refused rather than
-	// clamped: a number somebody wrote and did not get is worse than a number
-	// somebody wrote and was told about.
-	PageSize int
+	// APIKey is the account's key, sent as x-apisports-key. It belongs to the
+	// account that holds the subscription.
+	APIKey string
+	// BaseURL is the service's address; empty means [DefaultBaseURL]. A test
+	// points it at a local server.
+	BaseURL string
+	// HTTPClient makes the requests; nil means a client with Timeout.
+	HTTPClient *http.Client
+	// Timeout bounds one request; empty means [DefaultTimeout].
+	Timeout time.Duration
 }
 
-// Validate reports what the configuration cannot be used with.
-//
-// It is called by New, so an application with a setting that cannot work fails
-// where it is wired rather than on the first request that needed it.
-func (c Config) Validate() error {
-	if c.Prefix != "" && c.Prefix[0] != '/' {
-		return fmt.Errorf("football: Config.Prefix is %q and has to start with /", c.Prefix)
-	}
-	if c.Prefix != "" {
-		if err := validateRoutePrefix(c.Prefix); err != nil {
-			return err
-		}
-	}
-	if c.PageSize < 0 || c.PageSize > MaxPageSize {
-		return fmt.Errorf("football: Config.PageSize is %d, and has to be between 0 and %d, where 0 means %d", c.PageSize, MaxPageSize, DefaultPageSize)
-	}
-	return nil
+// String formats the configuration without the key.
+func (c Config) String() string {
+	return fmt.Sprintf("football.Config{APIKey:%s BaseURL:%q Timeout:%s}", redact(c.APIKey), c.BaseURL, c.Timeout)
 }
 
-// validateRoutePrefix asks the standard library to parse the exact patterns
-// the module will register. Its parser is not exported and reports invalid
-// patterns by panic, so the throwaway mux turns that boot-time panic into the
-// configuration error New promises.
-func validateRoutePrefix(prefix string) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("football: Config.Prefix %q cannot be registered as a route path", prefix)
-		}
-	}()
+// GoString formats the configuration without the key, for %#v.
+func (c Config) GoString() string { return c.String() }
 
-	handler := http.NotFoundHandler()
-	mux := http.NewServeMux()
-	mux.Handle(http.MethodGet+" "+prefix, handler)
-	mux.Handle(http.MethodGet+" "+prefix+"/{id}", handler)
-	mux.Handle(http.MethodPost+" "+prefix, handler)
-	return nil
-}
-
-// withDefaults returns the configuration with the optional fields filled in.
-//
-// It runs after Validate and never before: filling a default in first would
-// hide the value somebody actually wrote from the check that would have refused
-// it.
-func (c Config) withDefaults() Config {
-	if c.Prefix == "" {
-		c.Prefix = DefaultPrefix
+func redact(key string) string {
+	if key == "" {
+		return `""`
 	}
-	if c.PageSize == 0 {
-		c.PageSize = DefaultPageSize
-	}
-	return c
+	return "[redacted]"
 }

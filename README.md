@@ -1,239 +1,188 @@
-<p align="center">
-  <img src=".github/logo.svg" alt="Arandu" width="180">
-</p>
-
 # Arandu Football
 
-An Arandu package. It registers its own routes, owns its own table, and decides
-for itself who may reach either.
+A Go client for the [API-Football v3](https://www.api-football.com/documentation-v3)
+service, and an in-memory stand-in for it.
+
+It reads **leagues**, **teams** and **fixtures** (kickoff, status, score), keeps
+the request allowance the service reports, and turns the service's many status
+codes into five. It imports the standard library only, registers nothing and
+owns no table: there is no module to wire, no route and no migration.
+
+## What it is not
+
+- **It has no betting surface.** There is no endpoint, type or parameter for
+  odds, predictions or bets, and a test reads the source to keep it that way.
+- **It does not come with a key.** The API key belongs to whoever holds the
+  subscription with the service, and every request spends that account's
+  allowance. Keep it in the environment, never in the repository.
+- **It does not license the logos.** `League.Logo`, `Team.Logo` and
+  `TeamRef.Logo` are addresses the service gives; the crests and competition
+  logos are trademarks of the clubs and the competitions. Whether to show them
+  is the application's decision.
 
 ## Install
 
-```bash
-go get github.com/hyz-is/arandu-football
+```sh
+go get github.com/hyz-is/arandu-football@v0.1.0
 ```
 
-## Wire it
+Go 1.26.10 or later.
 
-An Arandu application registers a module explicitly. There is no service
-provider, no container and no discovery, so these are the lines to paste into
-`bootstrap/app.go`, and the views add one import below.
-
-The import, with the other module imports:
+## Use
 
 ```go
+package main
+
 import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"time"
+
 	football "github.com/hyz-is/arandu-football"
 )
-```
 
-The construction, in `App`, once `NewAppServiceProvider` has returned. `New`
-refuses a wiring that cannot work and `Configure` has no way to return that
-error, so the module is built where the error can leave; the database and the
-session store are the ones the framework built from the configuration:
-
-```go
-	footballModule, err := football.New(football.Config{}, drivers.DB, drivers.Sessions)
+func main() {
+	client, err := football.New(football.Config{APIKey: os.Getenv("API_FOOTBALL_KEY")})
 	if err != nil {
-		_ = drivers.Close()
-		return nil, err
+		panic(err)
 	}
-```
+	var source football.Source = client // depend on the interface
 
-And the registration, in the `WithProviders(...)` chain the builder is made of:
-
-```go
-	return Configure(cfg, drivers, app).
-		WithProviders(footballModule).
-		WithVersion(version, commit).
-		Create()
-```
-
-Then, once, before the application serves:
-
-```bash
-aru migrate
-```
-
-This package owns a table, which is why the migration step is not optional and
-why `arandu.mod.toml` says `migrations = true`.
-
-## Publish the views
-
-This package carries the markup of its own pages and hands it over instead of
-rendering it from the inside, because a page you cannot edit is a page that says
-the wrong thing in your product.
-
-Look at what would be written, then write it:
-
-```bash
-aru vendor:publish --tag=view
-aru vendor:publish --tag=view --apply
-```
-
-Nothing is written without `--apply`. The preview lists every file as `create`,
-`update`, `unchanged` or `conflict`, and running the command a second time
-writes nothing. A file changed outside its `arandu:begin custom` markers is
-reported as a conflict and left alone; `--force` publishes over one, and even
-then what is inside the markers is carried forward.
-
-The files land under `resources/views/modules/football/`, and from that point
-they are yours. Nothing of this package is compiled beside them, so no view name
-is registered twice and no rule has to decide which of two files won — the
-consequence being that a view of this package that changes later does not reach
-a project that already published it.
-
-Two steps are left to you, and they are left to you because a command that
-edited `bootstrap/app.go` behind your back is a command whose output nobody can
-explain. Compile what was written:
-
-```bash
-aru view:build
-```
-
-and import the directory it wrote into, with the other imports:
-
-```go
-	_ "your/module/path/storage/framework/views/modules/football"
-```
-
-Without that import the views are not in the binary, and the module refuses to
-boot rather than answering the first request that reaches one of them with a
-500. The refusal names the view, the command and the import.
-
-## Configuration
-
-| field | required | meaning |
-| --- | --- | --- |
-| `Prefix` | no | where the routes are mounted. Defaults to `/football`. |
-| `PageSize` | no | how many records one page answers with. Defaults to 25, refused above 200. |
-
-The zero `Config{}` is a valid configuration. There is no tenant to set: every
-route needs a session, and the tenant of every statement is the one on the
-Grant of whoever is signed in.
-
-`New` returns an error rather than starting half-wired, so a setting that
-cannot work fails where it is written instead of on the first request that
-needed it.
-
-## Routes
-
-| method | path | name |
-| --- | --- | --- |
-| `GET` | `/football` | `football.index` |
-| `GET` | `/football/{id}` | `football.show` |
-| `POST` | `/football` | `football.store` |
-
-Every one of them sits behind `RequireAuth`: a visitor with no session is sent
-to `/auth/login`, and the handler of a request that has one reads who is asking
-with `ctx.User()`. Behind the guard, every route is refused until the policy is
-opened. That is the state the package ships in, and it is deliberate.
-
-A handler returns the error the service returned, and the router answers it: a
-policy refusal is 403, a record that is not there is 404, and a rejected input
-goes back where it came from with the messages in the flash. A request that asks
-for JSON gets the same statuses as `application/problem+json` documents, and a
-rejected input as a 422 with the messages keyed by field. No handler maps an
-error to a status itself.
-
-## Open the policy
-
-`policy.go` denies every action and has no branch that allows one. Open what
-this package needs, one action at a time, inside the custom block:
-
-```go
-	// arandu:begin custom
-	if a == FootballView && (s.ID == record.ID || s.HasRole("admin")) {
-		return nil
+	ctx := context.Background()
+	fixtures, err := source.Fixtures(ctx, football.FixtureQuery{
+		LeagueID: 39,
+		Season:   2024,
+		From:     time.Date(2024, 12, 1, 0, 0, 0, 0, time.UTC),
+		To:       time.Date(2024, 12, 8, 0, 0, 0, 0, time.UTC),
+	})
+	switch {
+	case errors.Is(err, football.ErrRateLimited):
+		fmt.Println("out of requests; try again later")
+	case errors.Is(err, football.ErrUnauthorized):
+		fmt.Println("the API key was refused")
+	case err != nil:
+		panic(err)
 	}
-	// arandu:end custom
+	for _, f := range fixtures {
+		fmt.Println(f.Kickoff, f.Home.Name, f.Status, f.Away.Name)
+	}
+	fmt.Println("requests left:", source.Quota().Remaining)
+}
 ```
 
-What is not written there stays closed, including every action added later.
+`Config` takes the key, and optionally `BaseURL` (default
+`https://v3.football.api-sports.io`), `HTTPClient` (default a client with
+`Timeout`) and `Timeout` (default 15 seconds, applied to every request).
+`Config` prints without its key, even with `%+v` or `%#v`.
 
-## The data path
+### The source
 
-`Football` embeds `model.Model`, and `footballTable`, beside it in `model.go`,
-declares its table once. `aru model:build` generates `FootballQuery.go` from
-it: `Footballs(db)`, which starts a `*FootballQuery`, and `FootballCollection`.
-The file is committed and never edited by hand; regenerate it after changing
-the entity, and `aru model:build --check` fails when it is out of date.
-
-`FootballService` owns `*data.DB` and follows
-`validate -> security.Authorize -> Grant -> Model terminal`; handlers never hold
-the database or start a query. Every query starts at `Footballs(s.db)`: the
-constructor returns one mutable query, so a second chain begun from a value held
-in a variable would carry the clauses of the first.
-
-Create builds the row with `Footballs(s.db).New()` and writes `TenantID` from
-`data.Tenant(g)`. Find authorizes before reading and again against the row it
-found. List authorizes before building its scoped, allowlisted query. The table
-keeps its default `tenant_id` scope on every terminal.
-
-Terminals return `*Football` and `[]*Football`. Keep those pointers: a copy of a
-row keeps the model of the original, and the model refuses to write through it
-with `model.ErrUnwired`. `Resource` and `Collection` are explicit response
-snapshots and do not expose tenant or Model internals.
-
-The rules of the entity itself — an invariant, a derived value, a transition
-such as `Rename` guarded by `CanRename` — go in the custom block of `model.go`,
-as pure methods: no database, no network, no clock read inside, no Grant. The
-service orchestrates: it validates, authorizes, calls those rules and saves
-with the Grant.
-
-There is no CRUD Repository. Add one only for a complex query, read model,
-report, export or raw SQL contract that the generated query cannot express.
-
-## Layout
-
-```
-module.go         registration, routes, handlers and migrations
-config.go         what the application passes in
-model.go          the entity, its table and its own rules, and what it may answer with
-FootballQuery.go  the query aru model:build generates from model.go
-policy.go         who may do what
-service.go        the use cases, and Model access after authorization
-views.go          the files the application takes ownership of
+```go
+type Source interface {
+	Leagues(ctx context.Context, search string) ([]League, error)
+	Teams(ctx context.Context, leagueID int64, season int) ([]Team, error)
+	Fixtures(ctx context.Context, q FixtureQuery) ([]Fixture, error)
+	Quota() Quota
+}
 ```
 
-## What is already correct, and has to stay that way
+`Quota` makes no request: it is the last allowance read from the
+`x-ratelimit-requests-remaining` and `x-ratelimit-requests-limit` headers of the
+most recent answer, and its `At` is the zero time before the first answer.
 
-**The policy denies everything.** There is no permit-all branch to delete
-later. The Service calls `security.Authorize` before its first `Footballs(db)`
-reach, and every Model terminal requires the Grant that call produced.
+### Fixtures
 
-**Authorization precedes the Model.** The package audit checks that order in
-every exported Service method. A Model terminal enforces tenant scope; the
-preceding Policy call decides whether the action itself is allowed.
+`FixtureQuery` is read in this order:
 
-**The tenant comes from `data.Tenant(g)`.** Never from the path, the body, the
-query string or a header. The value on the Grant came from the session; a value
-that arrived with the request is a value the caller chose.
+1. `IDs`: asked with the service's `ids` parameter, twenty to a request, so a
+   long list is several requests. Duplicates are asked once.
+2. `LiveOnly`: every live fixture (`live=all`), kept to `LeagueID` when one is
+   given.
+3. Otherwise `LeagueID`, `Season` and the `From` and `To` dates, sent as
+   `YYYY-MM-DD` in UTC. A zero field is left out; a query with every field zero
+   is refused.
 
-**Who is asking comes from the guard.** `RequireAuth` loads the session once and
-puts the subject on the request; nothing in the module loads it again.
+Every request carries `timezone=UTC`, and `Kickoff` is in UTC.
 
-**`arandu.mod.toml` declares what the package does** — network, filesystem,
-exec, migrations — and the suite compares the declaration against what the code
-*calls*, not against what it imports: `net/http` is imported by everything with
-a route and says nothing. A package that says it makes no outbound calls and
-then opens one fails its own tests, and that is the only place the comparison
-happens. `aru doctor` audits the application it is run inside and never loads a
-dependency, so nothing audits an installed package except the package itself.
+`HomeGoals` and `AwayGoals` are the score of normal time plus extra time, and
+never the penalty shoot-out: `score.fulltime` plus `score.extratime` when there
+is one. While a fixture is live they are the running score the service reports.
+They are `nil` until the fixture has started.
 
-## Tests
+| Service code | Status |
+| --- | --- |
+| `NS`, `TBD` | `StatusScheduled` |
+| `1H`, `HT`, `2H`, `ET`, `BT`, `P`, `LIVE`, `INT` | `StatusLive` |
+| `FT`, `AET`, `PEN`, `AWD`, `WO` | `StatusFinished` |
+| `PST`, `SUSP` | `StatusPostponed` |
+| `CANC`, `ABD` | `StatusCancelled` |
 
-```bash
+A code the package does not know is read as scheduled: a fixture is never
+reported live or finished on a guess.
+
+### Errors
+
+The service reports most failures inside an HTTP 200, in an `errors` field. They
+are treated: a refused key or account is `ErrUnauthorized`, and a minute or day
+limit is `ErrRateLimited`, as are HTTP 401, 403 and 429 for the first and the
+last. Test them with `errors.Is`. Any other refusal is an error carrying the
+service's message. No error carries the API key.
+
+## Test your own code
+
+`NewFake` returns a `Source` that holds data in memory and never touches the
+network:
+
+```go
+fake := football.NewFake()
+fake.AddLeague(football.League{ID: 39, Name: "Premier League", Country: "England", Seasons: []int{2024}})
+fake.AddTeam(39, 2024, football.Team{ID: 33, Name: "Manchester United"})
+fake.AddFixture(football.Fixture{
+	ID: 1001, LeagueID: 39, Season: 2024,
+	Kickoff: time.Date(2024, 12, 1, 15, 0, 0, 0, time.UTC),
+	Status:  football.StatusScheduled,
+})
+
+// The match is played: set the same ID again.
+two, one := 2, 1
+fake.SetFixture(football.Fixture{
+	ID: 1001, LeagueID: 39, Season: 2024,
+	Kickoff: time.Date(2024, 12, 1, 15, 0, 0, 0, time.UTC),
+	Status:  football.StatusFinished, HomeGoals: &two, AwayGoals: &one,
+})
+
+fake.SetQuota(football.Quota{Remaining: 10, Limit: 100})
+fake.FailWith(football.ErrRateLimited) // every read now fails; FailWith(nil) undoes it
+```
+
+The Fake answers a `FixtureQuery` the way the service does (IDs, then live, then
+league, season and dates, by UTC date), orders results by kickoff and then ID,
+and hands out copies, so a test that changes a result does not change the Fake.
+
+## The manifest
+
+`arandu.mod.toml` declares `network = true` and nothing else: the package makes
+GET requests to the service's address. `tests/Unit/audit_test.go` compares the
+declaration with what the code calls.
+
+## Development
+
+```sh
+export GOWORK=off
+gofmt -l $(find . -name '*.go' -not -path '*/testdata/*' -not -name '*.kyse.go')
+go build ./...
+go vet ./...
 go test -race ./...
 ```
 
-The denial suite constructs the Service with a nil database, so even building
-`Footballs(nil)` would panic. The structural twin reads the allowed path and
-rejects any Service method that reaches the Model before `Authorize`, and any
-handler that loads the session or picks a status itself. The route tests drive
-the module with no session, with a signed-in subject and with a rejected input,
-on that same handle over no database.
+No test reaches the network: the service is a local `httptest` server with JSON
+written by hand.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md) and
+[UPGRADE.md](UPGRADE.md). Vulnerabilities follow [SECURITY.md](SECURITY.md).
 
 ## Licence
 
-MIT. See [LICENSE.md](LICENSE.md). Copyright HYZIS.
+MIT, see [LICENSE.md](LICENSE.md).
