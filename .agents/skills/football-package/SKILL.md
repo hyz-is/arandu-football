@@ -1,23 +1,12 @@
 ---
-name: skeleton-package
-description: Install, wire and use the :package_name package (Go, Arandu) in an application. Use when the request is to "install :package_name", "add :module_slug to the app", "go get :module_path", "wire it into bootstrap/app.go", "register the module", "use the :module_slug routes", "everything under /:module_slug returns 403", "403 forbidden from :module_slug", "it redirects to /auth/login", "the table does not exist", "no such table", "change where it is mounted", "let admins read it", or when a project's go.mod already requires :module_path. Covers the wiring and where each part goes, publishing and linking the views, the Config fields, none of them required, the routes, their names and the session they need, why the policy refuses everything until somebody opens it, and the migration step that is not optional.
+name: football-package
+description: Install, wire and use the Arandu Football package (Go, Arandu) in an application. Use when the request is to "install Arandu Football", "add football to the app", "go get github.com/hyz-is/arandu-football", "wire it into bootstrap/app.go", "register the module", "use the football routes", "everything under /football returns 403", "403 forbidden from football", "it redirects to /auth/login", "the table does not exist", "no such table", "change where it is mounted", "let admins read it", or when a project's go.mod already requires github.com/hyz-is/arandu-football. Covers the wiring and where each part goes, publishing and linking the views, the Config fields, none of them required, the routes, their names and the session they need, why the policy refuses everything until somebody opens it, and the migration step that is not optional.
 license: MIT
 metadata:
   audience: app
 ---
 
-<!-- configure:template-start -->
-This file is a template. It ships in the package skeleton with the placeholders
-`configure.go` rewrites, so the package that comes out of the skeleton arrives
-carrying the skill that teaches an assistant to install it. The directory name
-is rewritten with the contents, because a skill whose frontmatter `name` and
-directory disagree is a skill nothing loads.
-
-Everything below is written as if the package existed. Keep it that way when you
-edit it: the audience is somebody working in an *application* that installs the
-package, not somebody changing the package.
-<!-- configure:template-end -->
-# Using :package_name
+# Using Arandu Football
 
 An Arandu package with one entity, its own table, its own routes and its own
 policy. It is registered by hand — there is no service provider, no container
@@ -27,7 +16,7 @@ happen.
 ## Install
 
 ```bash
-go get :module_path
+go get github.com/hyz-is/arandu-football
 ```
 
 ## The wiring, and where each part goes
@@ -39,7 +28,7 @@ The import, with the other module imports:
 
 ```go
 import (
-	:module_slug ":module_path"
+	football "github.com/hyz-is/arandu-football"
 )
 ```
 
@@ -49,7 +38,7 @@ error, so the module is built where the error can leave. The database and the
 session store are the ones the framework built from the configuration:
 
 ```go
-	:module_slugModule, err := :module_slug.New(:module_slug.Config{}, drivers.DB, drivers.Sessions)
+	footballModule, err := football.New(football.Config{}, drivers.DB, drivers.Sessions)
 	if err != nil {
 		_ = drivers.Close()
 		return nil, err
@@ -60,7 +49,7 @@ And the registration, in the `WithProviders(...)` chain the builder is made of:
 
 ```go
 	return Configure(cfg, drivers, app).
-		WithProviders(:module_slugModule).
+		WithProviders(footballModule).
 		WithVersion(version, commit).
 		Create()
 ```
@@ -82,12 +71,12 @@ aru view:build
 ```
 
 The first line only previews; nothing is written without `--apply`. The files
-land under `resources/views/modules/:module_slug/` and are the project's from
+land under `resources/views/modules/football/` and are the project's from
 then on. `aru view:build` compiles them, and the compiled package is imported
 with the other blank imports of `bootstrap/app.go`:
 
 ```go
-	_ "your/module/path/storage/framework/views/modules/:module_slug"
+	_ "your/module/path/storage/framework/views/modules/football"
 ```
 
 **Symptom to recognise:** the application stops at boot with an error naming the
@@ -114,10 +103,10 @@ route that authorized correctly. The migration has not run.
 
 | field | required | meaning |
 | --- | --- | --- |
-| `Prefix` | no | where the routes are mounted. Defaults to `/:module_slug` |
+| `Prefix` | no | where the routes are mounted. Defaults to `/football` |
 | `PageSize` | no | how many records one page answers with. Defaults to 25, refused above 200 |
 
-`:module_slug.Config{}` is a complete configuration. There is no tenant to pass:
+`football.Config{}` is a complete configuration. There is no tenant to pass:
 every route needs a session, and the tenant of every statement comes from
 `data.Tenant(g)`, off the Grant of whoever is signed in. Passing a value the
 request named — a path segment, a header, a subdomain read off the URL — is what
@@ -132,9 +121,9 @@ wrote and did not get is worse than a number somebody wrote and was told about.
 
 | method | path | name |
 | --- | --- | --- |
-| `GET` | `/:module_slug` | `:module_slug.index` |
-| `GET` | `/:module_slug/{id}` | `:module_slug.show` |
-| `POST` | `/:module_slug` | `:module_slug.store` |
+| `GET` | `/football` | `football.index` |
+| `GET` | `/football/{id}` | `football.show` |
+| `POST` | `/football` | `football.store` |
 
 Every route sits behind `RequireAuth`, mounted by the package itself. A request
 with no session is sent to `/auth/login` — 303, or `YPY-Redirect` for a YPY
@@ -151,7 +140,7 @@ Build URLs from the names, never by writing the path a second time. `aru
 route:list` shows them grouped by module. Under a custom `Prefix` the paths move
 and the names do not.
 
-`GET /:module_slug` answers `{"data": {"items": [...]}}`, and adds
+`GET /football` answers `{"data": {"items": [...]}}`, and adds
 `"next_cursor"` beside `data` when a further page exists. Pass it back as
 `?cursor=`. A page shorter than `PageSize` is the last one and carries no
 cursor.
@@ -162,7 +151,7 @@ identifier and the response is a declared list of fields rather than the entity.
 ## Every route refuses everybody, until you open the policy
 
 This is the state the package ships in, and it is not a bug to work around.
-`SkeletonPolicy` denies every action and has no branch that allows one:
+`FootballPolicy` denies every action and has no branch that allows one:
 
 ```
 403 Forbidden
@@ -176,15 +165,15 @@ Opening an action means writing the rule that opens it, in the package's
 
 ```go
 	// arandu:begin custom
-	if a == SkeletonView && (s.ID == record.ID || s.HasRole("admin")) {
+	if a == FootballView && (s.ID == record.ID || s.HasRole("admin")) {
 		return nil
 	}
 	// arandu:end custom
 ```
 
 What is not written there stays closed, including every action added later.
-There are five actions — `SkeletonView`, `SkeletonList`, `SkeletonCreate`,
-`SkeletonUpdate`, `SkeletonDelete` — and opening one opens exactly one.
+There are five actions — `FootballView`, `FootballList`, `FootballCreate`,
+`FootballUpdate`, `FootballDelete` — and opening one opens exactly one.
 
 **Do not open it from the application.** There is no hook, no override and no
 config flag for the policy, and adding one would be a second place where
@@ -218,8 +207,8 @@ answers 200 with an empty body is not something it does.
 ## Reporting a problem
 
 Issues and pull requests go to the repository the module path names,
-`:module_path`, which belongs to `:author_username`. A vulnerability goes to the
+`github.com/hyz-is/arandu-football`, which belongs to `hyz-is`. A vulnerability goes to the
 private advisory form named in that repository's `SECURITY.md`, and never into
 an issue.
 
-MIT licensed. Copyright :author_name.
+MIT licensed. Copyright HYZIS.
